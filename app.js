@@ -20,12 +20,16 @@ function loadState() {
   return { activities: starterActivities, entries: [] };
 }
 let state = loadState();
+state.weightKg = Number(state.weightKg) > 0 ? Number(state.weightKg) : 70;
+state.todos = Array.isArray(state.todos) ? state.todos : [];
 let selectedDate = localDate();
 let editingEntryId = null;
 let sectionActivityId = null;
 let fieldTarget = null;
 let rating = 4;
 let activeView = 'today';
+let todoTab = 'active';
+let editingTodoId = null;
 const save = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 const activityById = (id) => state.activities.find((activity) => activity.id === id);
 const sectionById = (activity, id) => activity?.sections.find((section) => section.id === id);
@@ -34,7 +38,7 @@ const sectionLabel = (entry) => sectionById(activityById(entry.activityId), entr
 
 function showView(view) {
   activeView = view;
-  for (const name of ['today', 'history', 'activities']) $(`#${name}View`).classList.toggle('hidden', view !== name);
+  for (const name of ['today', 'todos', 'history', 'activities']) $(`#${name}View`).classList.toggle('hidden', view !== name);
   document.querySelectorAll('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   $('#breadcrumb').textContent = `Overview / ${view[0].toUpperCase()}${view.slice(1)}`;
   $('.sidebar').classList.remove('open');
@@ -43,6 +47,7 @@ function showView(view) {
 
 function render() {
   if (activeView === 'today') renderToday();
+  if (activeView === 'todos') renderTodos();
   if (activeView === 'history') renderHistory();
   if (activeView === 'activities') renderActivities();
 }
@@ -54,6 +59,18 @@ function totalMinutes(entries) {
     return sum + (section?.fields || []).reduce((part, field) => part + (/minute/i.test(field.name) || field.unit === 'min' ? Number(entry.values?.[field.id] || 0) : 0), 0);
   }, 0);
 }
+function ellipticalEstimate(entry) {
+  const activity = activityById(entry.activityId);
+  const section = sectionById(activity, entry.sectionId);
+  if (activity?.id !== 'exercise' || section?.id !== 'stepper') return null;
+  const strength = Number(entry.values?.strength);
+  const minutes = Number(entry.values?.minutes);
+  const weightKg = Number(entry.weightKg || state.weightKg || 70);
+  if (!Number.isFinite(strength) || strength < 1 || strength > 8 || !Number.isFinite(minutes) || minutes <= 0) return null;
+  // This trainer's 1–8 resistance dial is mapped evenly across moderate-to-vigorous elliptical effort.
+  const met = 5 + ((strength - 1) / 7) * 4;
+  return Math.round(met * 3.5 * weightKg / 200 * minutes);
+}
 function average(entries) { return entries.length ? entries.reduce((sum, entry) => sum + Number(entry.rating || 0), 0) / entries.length : 0; }
 
 function renderToday() {
@@ -63,11 +80,12 @@ function renderToday() {
   $('#dateLabel').textContent = selectedDate === today ? 'Today,' : `${formatDate(selectedDate, { weekday: 'long' })},`;
   $('#selectedDate').value = selectedDate;
   $('#averageScore').textContent = entries.length ? average(entries).toFixed(1) : '—';
-  $('#scoreHint').textContent = entries.length ? 'Across your actions today' : 'Log an action to start reflecting';
+  $('#scoreHint').textContent = entries.length ? (selectedDate === today ? 'Across your actions today' : 'Across your actions that day') : 'Log an action to start reflecting';
   $('#actionCount').textContent = entries.length;
   $('#minutesTotal').textContent = totalMinutes(entries);
+  $('#caloriesTotal').textContent = entries.reduce((sum, entry) => sum + (ellipticalEstimate(entry) || 0), 0);
   $('#entriesCount').textContent = `${entries.length} ${entries.length === 1 ? 'action' : 'actions'}`;
-  $('#entriesList').innerHTML = entries.length ? entries.map(entryMarkup).join('') : `<div class="empty-state"><div class="empty-icon">✳</div><h3>A fresh page for today</h3><p>Log an action to remember what brought you satisfaction.</p><button data-action="new-entry">＋ Log your first action</button></div>`;
+  $('#entriesList').innerHTML = entries.length ? entries.map(entryMarkup).join('') : `<div class="empty-state"><div class="empty-icon">✳</div><h3>${selectedDate === today ? 'A fresh page for today' : 'No actions on this day yet'}</h3><p>Log an action to remember what brought you satisfaction.</p><button data-action="new-entry">＋ Log your first action</button></div>`;
   renderWeek();
   $('#quickGrid').innerHTML = state.activities.flatMap((activity) => activity.sections.map((section) => `<button class="quick-card" data-action="quick-log" data-activity="${escapeHtml(activity.id)}" data-section="${escapeHtml(section.id)}"><span class="quick-icon">${escapeHtml(activity.icon)}</span><strong>${escapeHtml(section.name)}</strong><small>${escapeHtml(activity.name)}</small></button>`)).join('') || `<button class="quick-card" data-view="activities">Create your first activity ＋</button>`;
 }
@@ -76,7 +94,8 @@ function entryMarkup(entry) {
   const activity = activityById(entry.activityId);
   const section = sectionById(activity, entry.sectionId);
   const details = (section?.fields || []).filter((field) => entry.values?.[field.id] !== '' && entry.values?.[field.id] != null).map((field) => `${escapeHtml(field.name)}: ${escapeHtml(entry.values[field.id])}${field.unit ? ` ${escapeHtml(field.unit)}` : ''}`).join(' · ');
-  return `<article class="entry-row"><span class="entry-icon">${escapeHtml(activity?.icon || '✦')}</span><div class="entry-body"><div class="entry-title">${escapeHtml(sectionLabel(entry))}<small>${escapeHtml(activity?.name || 'Activity')}</small></div>${details ? `<div class="entry-meta">${details}</div>` : ''}${entry.note ? `<p class="entry-note">${escapeHtml(entry.note)}</p>` : ''}</div><span class="entry-score" title="Satisfaction: ${entry.rating} out of 5">✦ ${entry.rating}</span><div class="entry-actions"><button data-action="edit-entry" data-id="${escapeHtml(entry.id)}" aria-label="Edit entry">✎</button><button data-action="delete-entry" data-id="${escapeHtml(entry.id)}" aria-label="Delete entry">×</button></div></article>`;
+  const calories = ellipticalEstimate(entry);
+  return `<article class="entry-row"><span class="entry-icon">${escapeHtml(activity?.icon || '✦')}</span><div class="entry-body"><div class="entry-title">${escapeHtml(sectionLabel(entry))}<small>${escapeHtml(activity?.name || 'Activity')}</small></div>${details ? `<div class="entry-meta">${details}${calories ? ` · ~${calories} kcal` : ''}</div>` : ''}${entry.note ? `<p class="entry-note">${escapeHtml(entry.note)}</p>` : ''}</div><span class="entry-score" title="Satisfaction: ${entry.rating} out of 5">✦ ${entry.rating}</span><div class="entry-actions"><button data-action="edit-entry" data-id="${escapeHtml(entry.id)}" aria-label="Edit entry">✎</button><button data-action="delete-entry" data-id="${escapeHtml(entry.id)}" aria-label="Delete entry">×</button></div></article>`;
 }
 
 function renderWeek() {
@@ -97,6 +116,26 @@ function renderHistory() {
   $('#historyList').innerHTML = dates.length ? dates.map((date) => `<div class="history-day"><h3>${escapeHtml(formatDate(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))} · ${entryForDate(date).length} actions · ${average(entryForDate(date)).toFixed(1)} / 5</h3>${entryForDate(date).map(entryMarkup).join('')}</div>`).join('') : `<div class="empty-state"><div class="empty-icon">▦</div><h3>No history yet</h3><p>Once you log an action, your days will appear here.</p><button data-view="today">Go to today</button></div>`;
 }
 
+function renderTodos() {
+  const archived = todoTab === 'archived';
+  const visibleTodos = state.todos.filter((todo) => Boolean(todo.completed) === archived);
+  const byDate = new Map();
+  visibleTodos.forEach((todo) => {
+    if (!byDate.has(todo.date)) byDate.set(todo.date, []);
+    byDate.get(todo.date).push(todo);
+  });
+  const dates = [...byDate.keys()].sort().reverse();
+  document.querySelectorAll('[data-todo-tab]').forEach((tab) => {
+    const selected = tab.dataset.todoTab === todoTab;
+    tab.classList.toggle('active', selected);
+    tab.setAttribute('aria-selected', String(selected));
+  });
+  $('#todoPanelTitle').textContent = archived ? 'Archived todos' : 'Active todos';
+  $('#todoPanelHint').textContent = archived ? 'Completed todos' : 'Things still to do';
+  $('#todoList').setAttribute('aria-labelledby', archived ? 'archivedTodoTab' : 'activeTodoTab');
+  $('#todoList').innerHTML = dates.length ? dates.map((date) => `<div class="history-day todo-day"><h3>${escapeHtml(formatDate(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))}</h3>${byDate.get(date).map((todo) => `<article class="todo-row ${archived ? 'todo-completed' : ''}"><label class="todo-check"><input type="checkbox" data-todo-id="${escapeHtml(todo.id)}" aria-label="${archived ? 'Move back to active' : 'Mark complete'}: ${escapeHtml(todo.title)}" ${archived ? 'checked' : ''}><span class="todo-content"><strong>${escapeHtml(todo.title)}</strong>${todo.description ? `<span class="todo-description">${escapeHtml(todo.description)}</span>` : ''}</span></label><div class="todo-actions"><button type="button" data-action="edit-todo" data-id="${escapeHtml(todo.id)}" aria-label="Edit todo: ${escapeHtml(todo.title)}" title="Edit">✎</button><button type="button" data-action="delete-todo" data-id="${escapeHtml(todo.id)}" aria-label="Delete todo: ${escapeHtml(todo.title)}" title="Delete">×</button></div></article>`).join('')}</div>`).join('') : `<div class="empty-state"><div class="empty-icon">☷</div><h3>${archived ? 'No archived todos' : 'No active todos'}</h3><p>${archived ? 'Completed todos will appear here.' : 'Add a todo with a date to start your list.'}</p>${archived ? '' : '<button data-action="new-todo">＋ Add a todo</button>'}</div>`;
+}
+
 function renderActivities() {
   $('#activityCards').innerHTML = state.activities.map((activity) => `<article class="activity-card"><div class="activity-card-head"><span class="activity-icon">${escapeHtml(activity.icon)}</span><div><h2>${escapeHtml(activity.name)}</h2><small>${activity.sections.length} ${activity.sections.length === 1 ? 'section' : 'sections'}</small></div></div>${activity.sections.map((section) => `<div class="section-item"><div class="section-title"><span>${escapeHtml(section.name)}</span><button data-action="add-field" data-activity="${escapeHtml(activity.id)}" data-section="${escapeHtml(section.id)}">＋ Add field</button></div><div class="field-chips">${section.fields.map((field) => `<span class="field-chip">${escapeHtml(field.name)}${field.unit ? ` · ${escapeHtml(field.unit)}` : ''}</span>`).join('') || '<span class="field-chip">No fields yet</span>'}</div></div>`).join('')}<button class="add-section" data-action="add-section" data-activity="${escapeHtml(activity.id)}">＋ Add section</button></article>`).join('') || `<div class="panel empty-state"><div class="empty-icon">◈</div><h3>No activities yet</h3><p>Create one to start tracking.</p></div>`;
 }
@@ -114,7 +153,27 @@ function fillSectionOptions(sectionId) {
 }
 function renderEntryFields(values = {}) {
   const section = sectionById(activityById($('#entryActivity').value), $('#entrySection').value);
-  $('#dynamicFields').innerHTML = (section?.fields || []).map((field) => `<label>${escapeHtml(field.name)}${field.unit ? ` <span class="optional">(${escapeHtml(field.unit)})</span>` : ''}<input type="number" inputmode="decimal" step="any" min="0" data-field="${escapeHtml(field.id)}" value="${escapeHtml(values[field.id] ?? '')}" placeholder="${escapeHtml(field.example || '0')}" /></label>`).join('');
+  const isStepper = activityById($('#entryActivity').value)?.id === 'exercise' && section?.id === 'stepper';
+  $('#estimateWeight').required = isStepper;
+  $('#dynamicFields').innerHTML = (section?.fields || []).map((field) => {
+    const isStrength = isStepper && field.id === 'strength';
+    const isMinutes = isStepper && field.id === 'minutes';
+    return `<label>${escapeHtml(field.name)}${field.unit ? ` <span class="optional">(${escapeHtml(field.unit)})</span>` : ''}<input type="number" inputmode="decimal" step="${isStrength ? '1' : 'any'}" min="${isStrength ? '1' : '0'}" ${isStrength ? 'max="8" required' : isMinutes ? 'required' : ''} data-field="${escapeHtml(field.id)}" value="${escapeHtml(values[field.id] ?? '')}" placeholder="${escapeHtml(field.example || '0')}" /></label>`;
+  }).join('');
+  $('#calorieCalculator').classList.toggle('hidden', !isStepper);
+  if (isStepper) {
+    $('#estimateWeight').value = state.weightKg;
+    updateCaloriePreview();
+  }
+}
+function updateCaloriePreview() {
+  const strength = Number(document.querySelector('#dynamicFields [data-field="strength"]')?.value);
+  const minutes = Number(document.querySelector('#dynamicFields [data-field="minutes"]')?.value);
+  const weightKg = Number($('#estimateWeight').value);
+  const estimate = Number.isFinite(strength) && strength >= 1 && strength <= 8 && Number.isFinite(minutes) && minutes > 0 && Number.isFinite(weightKg) && weightKg >= 30 && weightKg <= 250
+    ? Math.round((5 + ((strength - 1) / 7) * 4) * 3.5 * weightKg / 200 * minutes)
+    : null;
+  $('#caloriePreview').textContent = estimate == null ? 'Enter strength and minutes' : `~${estimate} kcal`;
 }
 function renderRating() {
   $('#ratingPicker').innerHTML = [1, 2, 3, 4, 5].map((number) => `<button type="button" role="radio" aria-checked="${number === rating}" class="${number === rating ? 'selected' : ''}" data-rating="${number}" aria-label="${number} out of 5">${number}</button>`).join('');
@@ -124,13 +183,16 @@ function openEntry(activityId, sectionId, entryId) {
   editingEntryId = entryId || null;
   const entry = state.entries.find((item) => item.id === entryId);
   $('#entryDialogTitle').textContent = entry ? 'Edit action' : 'Log an action';
+  $('#entryDate').value = entry?.date || selectedDate;
   $('#entryError').classList.add('hidden');
   fillActivityOptions(entry?.activityId || activityId);
   fillSectionOptions(entry?.sectionId || sectionId);
   renderEntryFields(entry?.values || {});
+  if (entry?.weightKg) $('#estimateWeight').value = entry.weightKg;
   $('#entryNote').value = entry?.note || '';
   rating = entry?.rating || 4;
   renderRating();
+  updateCaloriePreview();
   $('#entryDialog').showModal();
 }
 
@@ -140,7 +202,15 @@ document.addEventListener('click', (event) => {
   if (button.dataset.view) { showView(button.dataset.view); return; }
   if (button.hasAttribute('data-close')) { button.closest('dialog').close(); return; }
   const action = button.dataset.action;
+  if (button.dataset.todoTab) { todoTab = button.dataset.todoTab; renderTodos(); return; }
   if (action === 'new-entry') openEntry();
+  if (action === 'new-todo') openTodo();
+  if (action === 'edit-todo') openTodo(button.dataset.id);
+  if (action === 'delete-todo' && confirm('Delete this todo?')) {
+    state.todos = state.todos.filter((todo) => todo.id !== button.dataset.id);
+    save();
+    renderTodos();
+  }
   if (action === 'quick-log') openEntry(button.dataset.activity, button.dataset.section);
   if (action === 'edit-entry') openEntry(null, null, button.dataset.id);
   if (action === 'delete-entry' && confirm('Delete this action?')) { state.entries = state.entries.filter((entry) => entry.id !== button.dataset.id); save(); render(); }
@@ -151,6 +221,8 @@ document.addEventListener('click', (event) => {
 
 $('#entryActivity').addEventListener('change', () => fillSectionOptions());
 $('#entrySection').addEventListener('change', () => renderEntryFields());
+$('#dynamicFields').addEventListener('input', (event) => { if (event.target.matches('[data-field="strength"], [data-field="minutes"]')) updateCaloriePreview(); });
+$('#estimateWeight').addEventListener('input', () => updateCaloriePreview());
 $('#entryForm').addEventListener('submit', (event) => {
   event.preventDefault();
   const activity = activityById($('#entryActivity').value);
@@ -159,8 +231,14 @@ $('#entryForm').addEventListener('submit', (event) => {
   const values = {};
   document.querySelectorAll('#dynamicFields [data-field]').forEach((input) => { values[input.dataset.field] = input.value; });
   const existing = state.entries.find((entry) => entry.id === editingEntryId);
-  const entry = { id: existing?.id || uid(), date: existing?.date || selectedDate, activityId: activity.id, sectionId: section.id, values, rating, note: $('#entryNote').value.trim(), createdAt: existing?.createdAt || new Date().toISOString() };
+  const entryDate = $('#entryDate').value;
+  if (!entryDate || localDate(parseDate(entryDate)) !== entryDate) { $('#entryError').textContent = 'Choose a valid date for this action.'; $('#entryError').classList.remove('hidden'); return; }
+  const weightKg = activity.id === 'exercise' && section.id === 'stepper' ? Number($('#estimateWeight').value) : undefined;
+  if (weightKg && (weightKg < 30 || weightKg > 250)) { $('#entryError').textContent = 'Enter a weight between 30 and 250 kg for the calorie estimate.'; $('#entryError').classList.remove('hidden'); return; }
+  if (weightKg) state.weightKg = weightKg;
+  const entry = { id: existing?.id || uid(), date: entryDate, activityId: activity.id, sectionId: section.id, values, ...(weightKg ? { weightKg } : {}), rating, note: $('#entryNote').value.trim(), createdAt: existing?.createdAt || new Date().toISOString() };
   if (existing) Object.assign(existing, entry); else state.entries.push(entry);
+  if (activeView === 'today') selectedDate = entryDate;
   save(); $('#entryDialog').close(); render();
 });
 $('#activityForm').addEventListener('submit', (event) => {
@@ -179,6 +257,48 @@ $('#fieldForm').addEventListener('submit', (event) => {
   save(); $('#fieldDialog').close(); renderActivities();
 });
 $('#newEntryButton').addEventListener('click', () => openEntry());
+function openTodo(todoId = null) {
+  const todo = state.todos.find((item) => item.id === todoId);
+  editingTodoId = todo?.id || null;
+  $('#todoForm').reset();
+  $('#todoTitle').setCustomValidity('');
+  $('#todoDialogTitle').textContent = todo ? 'Edit todo' : 'Add a todo';
+  $('#saveTodoButton').textContent = todo ? 'Save changes' : 'Add todo';
+  $('#todoDate').value = todo?.date || selectedDate;
+  $('#todoTitle').value = todo?.title || '';
+  $('#todoDescription').value = todo?.description || '';
+  $('#todoDialog').showModal();
+}
+$('#newTodoButton').addEventListener('click', openTodo);
+$('#todoTitle').addEventListener('input', () => $('#todoTitle').setCustomValidity(''));
+$('#todoForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const date = $('#todoDate').value;
+  const title = $('#todoTitle').value.trim();
+  if (!title) { $('#todoTitle').setCustomValidity('Enter a title for this todo.'); $('#todoTitle').reportValidity(); return; }
+  $('#todoTitle').setCustomValidity('');
+  if (!date || localDate(parseDate(date)) !== date) return;
+  const todo = state.todos.find((item) => item.id === editingTodoId);
+  if (todo) {
+    Object.assign(todo, { date, title, description: $('#todoDescription').value.trim() });
+  } else {
+    state.todos.push({ id: uid(), date, title, description: $('#todoDescription').value.trim() });
+  }
+  editingTodoId = null;
+  todoTab = 'active';
+  save();
+  $('#todoDialog').close();
+  renderTodos();
+});
+$('#todoList').addEventListener('change', (event) => {
+  const checkbox = event.target.closest('[data-todo-id]');
+  if (!checkbox) return;
+  const todo = state.todos.find((item) => item.id === checkbox.dataset.todoId);
+  if (!todo) return;
+  todo.completed = checkbox.checked;
+  save();
+  renderTodos();
+});
 $('#newActivityButton').addEventListener('click', () => { $('#activityForm').reset(); $('#activityDialog').showModal(); });
 $('#selectedDate').addEventListener('change', (event) => { if (event.target.value) { selectedDate = event.target.value; renderToday(); } });
 $('#previousDay').addEventListener('click', () => shiftDate(-1));
