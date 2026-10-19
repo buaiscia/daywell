@@ -312,4 +312,41 @@ $('#exportButton').addEventListener('click', () => {
   const link = document.createElement('a'); link.href = url; link.download = `daywell-export-${localDate()}.json`; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
+$('#importButton').addEventListener('click', () => $('#importFile').click());
+$('#importFile').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    if (file.size > 10 * 1024 * 1024) throw new Error('The selected file is larger than 10 MB.');
+    const imported = JSON.parse(await file.text());
+    const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+    const validActivity = (activity) => isRecord(activity) && typeof activity.id === 'string' && typeof activity.name === 'string'
+      && Array.isArray(activity.sections) && activity.sections.every((section) => isRecord(section) && typeof section.id === 'string'
+        && typeof section.name === 'string' && Array.isArray(section.fields)
+        && section.fields.every((field) => isRecord(field) && typeof field.id === 'string' && typeof field.name === 'string'));
+    const validEntry = (entry) => isRecord(entry) && typeof entry.id === 'string' && typeof entry.date === 'string'
+      && typeof entry.activityId === 'string' && typeof entry.sectionId === 'string'
+      && (entry.values === undefined || isRecord(entry.values));
+    const validTodo = (todo) => isRecord(todo) && typeof todo.id === 'string' && typeof todo.date === 'string'
+      && typeof todo.title === 'string';
+    if (!isRecord(imported) || !Array.isArray(imported.activities) || !imported.activities.every(validActivity)
+      || !Array.isArray(imported.entries) || !imported.entries.every(validEntry)
+      || (imported.todos !== undefined && (!Array.isArray(imported.todos) || !imported.todos.every(validTodo)))) {
+      throw new Error('This file does not look like a valid Daywell export.');
+    }
+    const action = state.entries.length || state.todos.length
+      ? `This will replace the data currently saved in this browser with ${imported.entries.length} actions and ${(imported.todos || []).length} todos. Continue?`
+      : `Import ${imported.entries.length} actions and ${(imported.todos || []).length} todos into this browser?`;
+    if (!confirm(action)) return;
+    state = { ...imported, weightKg: Number(imported.weightKg) > 0 ? Number(imported.weightKg) : 70, todos: imported.todos || [] };
+    selectedDate = localDate();
+    save();
+    render();
+    alert('Daywell data imported successfully.');
+  } catch (error) {
+    alert(`Could not import this file: ${error.message}`);
+  } finally {
+    event.target.value = '';
+  }
+});
 render();

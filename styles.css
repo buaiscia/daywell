@@ -27,3 +27,4 @@
 .todo-actions button:hover{background:#f1f6ee;color:#356c4a}
 .todo-actions button:last-child:hover{background:#fbefed;color:#b45e52}
 @media(max-width:430px){.todo-panel-heading{align-items:flex-start;flex-direction:column}.todo-tabs{align-self:stretch}.todo-tab{flex:1}}
+.history-actions{display:flex;gap:9px;flex-wrap:wrap}
