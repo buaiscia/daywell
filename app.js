@@ -22,6 +22,7 @@ function loadState() {
 let state = loadState();
 state.weightKg = Number(state.weightKg) > 0 ? Number(state.weightKg) : 70;
 state.todos = Array.isArray(state.todos) ? state.todos : [];
+state.journals = Array.isArray(state.journals) ? state.journals.filter((journal) => journal && typeof journal.date === 'string' && typeof journal.content === 'string') : [];
 let selectedDate = localDate();
 let editingEntryId = null;
 let sectionActivityId = null;
@@ -35,10 +36,17 @@ const activityById = (id) => state.activities.find((activity) => activity.id ===
 const sectionById = (activity, id) => activity?.sections.find((section) => section.id === id);
 const entryForDate = (date) => state.entries.filter((entry) => entry.date === date).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 const sectionLabel = (entry) => sectionById(activityById(entry.activityId), entry.sectionId)?.name || 'Removed section';
+const journalForDate = (date) => state.journals.find((journal) => journal.date === date);
+const journalIsDirty = () => $('#journalText').value !== (journalForDate(selectedDate)?.content || '');
+
+function confirmJournalNavigation() {
+  return activeView !== 'journal' || !journalIsDirty() || confirm('You have unsaved journal changes. Leave without saving?');
+}
 
 function showView(view) {
+  if (view !== activeView && !confirmJournalNavigation()) return;
   activeView = view;
-  for (const name of ['today', 'todos', 'history', 'activities']) $(`#${name}View`).classList.toggle('hidden', view !== name);
+  for (const name of ['today', 'journal', 'todos', 'history', 'activities']) $(`#${name}View`).classList.toggle('hidden', view !== name);
   document.querySelectorAll('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   $('#breadcrumb').textContent = `Overview / ${view[0].toUpperCase()}${view.slice(1)}`;
   $('.sidebar').classList.remove('open');
@@ -47,9 +55,20 @@ function showView(view) {
 
 function render() {
   if (activeView === 'today') renderToday();
+  if (activeView === 'journal') renderJournal();
   if (activeView === 'todos') renderTodos();
   if (activeView === 'history') renderHistory();
   if (activeView === 'activities') renderActivities();
+}
+
+function renderJournal() {
+  const journal = journalForDate(selectedDate);
+  const today = localDate();
+  $('#journalDate').value = selectedDate;
+  $('#journalDateLabel').textContent = selectedDate === today ? 'Today,' : `${formatDate(selectedDate, { weekday: 'long' })},`;
+  $('#journalHeading').textContent = selectedDate === today ? "Today's entry" : 'Entry for this day';
+  $('#journalText').value = journal?.content || '';
+  $('#journalSaveStatus').textContent = journal?.savedAt ? `Last saved ${new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(journal.savedAt))}` : 'No entry saved for this day';
 }
 
 function formatDate(date, options) { return new Intl.DateTimeFormat('en', options).format(parseDate(date)); }
@@ -112,8 +131,14 @@ function renderWeek() {
 }
 
 function renderHistory() {
-  const dates = [...new Set(state.entries.map((entry) => entry.date))].sort().reverse();
-  $('#historyList').innerHTML = dates.length ? dates.map((date) => `<div class="history-day"><h3>${escapeHtml(formatDate(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))} · ${entryForDate(date).length} actions · ${average(entryForDate(date)).toFixed(1)} / 5</h3>${entryForDate(date).map(entryMarkup).join('')}</div>`).join('') : `<div class="empty-state"><div class="empty-icon">▦</div><h3>No history yet</h3><p>Once you log an action, your days will appear here.</p><button data-view="today">Go to today</button></div>`;
+  const dates = [...new Set([...state.entries.map((entry) => entry.date), ...state.journals.map((journal) => journal.date)])].sort().reverse();
+  $('#historyList').innerHTML = dates.length ? dates.map((date) => {
+    const entries = entryForDate(date);
+    const journal = journalForDate(date);
+    const journalMarkup = journal ? `<article class="history-journal"><strong>Journal</strong><p>${escapeHtml(journal.content)}</p><button type="button" class="text-button" data-action="open-journal" data-date="${escapeHtml(date)}">Open entry</button></article>` : '';
+    const summary = entries.length ? `${entries.length} ${entries.length === 1 ? 'action' : 'actions'} · ${average(entries).toFixed(1)} / 5` : 'Journal entry';
+    return `<div class="history-day"><h3>${escapeHtml(formatDate(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))} · ${summary}</h3>${journalMarkup}${entries.map(entryMarkup).join('')}</div>`;
+  }).join('') : `<div class="empty-state"><div class="empty-icon">▦</div><h3>No history yet</h3><p>Journal entries and logged actions will appear here.</p><button data-view="today">Go to today</button></div>`;
 }
 
 function renderTodos() {
@@ -202,6 +227,7 @@ document.addEventListener('click', (event) => {
   if (button.dataset.view) { showView(button.dataset.view); return; }
   if (button.hasAttribute('data-close')) { button.closest('dialog').close(); return; }
   const action = button.dataset.action;
+  if (action === 'open-journal') { if (confirmJournalNavigation()) { selectedDate = button.dataset.date; showView('journal'); } return; }
   if (button.dataset.todoTab) { todoTab = button.dataset.todoTab; renderTodos(); return; }
   if (action === 'new-entry') openEntry();
   if (action === 'new-todo') openTodo();
@@ -300,6 +326,54 @@ $('#todoList').addEventListener('change', (event) => {
   renderTodos();
 });
 $('#newActivityButton').addEventListener('click', () => { $('#activityForm').reset(); $('#activityDialog').showModal(); });
+$('#journalText').addEventListener('input', () => {
+  const journal = journalForDate(selectedDate);
+  $('#journalSaveStatus').textContent = journal?.savedAt
+    ? `Unsaved changes · last saved ${new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(new Date(journal.savedAt))}`
+    : 'Unsaved changes';
+});
+$('#saveJournalButton').addEventListener('click', () => {
+  const content = $('#journalText').value;
+  const existing = journalForDate(selectedDate);
+  if (!content.trim()) {
+    if (existing) state.journals = state.journals.filter((journal) => journal.date !== selectedDate);
+  } else if (existing) {
+    Object.assign(existing, { content, savedAt: new Date().toISOString() });
+  } else {
+    state.journals.push({ date: selectedDate, content, savedAt: new Date().toISOString() });
+  }
+  save();
+  renderJournal();
+});
+window.addEventListener('beforeunload', (event) => {
+  if (activeView === 'journal' && journalIsDirty()) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
+$('#journalDate').addEventListener('change', (event) => {
+  if (!event.target.value) return;
+  if (journalIsDirty() && !confirm('You have unsaved journal changes. Leave without saving?')) {
+    event.target.value = selectedDate;
+    return;
+  }
+  selectedDate = event.target.value;
+  renderJournal();
+});
+function shiftJournalDate(offset) {
+  if (journalIsDirty() && !confirm('You have unsaved journal changes. Leave without saving?')) return;
+  const date = parseDate(selectedDate);
+  date.setDate(date.getDate() + offset);
+  selectedDate = localDate(date);
+  renderJournal();
+}
+$('#journalPreviousDay').addEventListener('click', () => shiftJournalDate(-1));
+$('#journalNextDay').addEventListener('click', () => shiftJournalDate(1));
+$('#journalJumpToday').addEventListener('click', () => {
+  if (journalIsDirty() && !confirm('You have unsaved journal changes. Leave without saving?')) return;
+  selectedDate = localDate();
+  renderJournal();
+});
 $('#selectedDate').addEventListener('change', (event) => { if (event.target.value) { selectedDate = event.target.value; renderToday(); } });
 $('#previousDay').addEventListener('click', () => shiftDate(-1));
 $('#nextDay').addEventListener('click', () => shiftDate(1));
@@ -329,16 +403,19 @@ $('#importFile').addEventListener('change', async (event) => {
       && (entry.values === undefined || isRecord(entry.values));
     const validTodo = (todo) => isRecord(todo) && typeof todo.id === 'string' && typeof todo.date === 'string'
       && typeof todo.title === 'string';
+    const validJournal = (journal) => isRecord(journal) && typeof journal.date === 'string'
+      && typeof journal.content === 'string' && (journal.savedAt === undefined || typeof journal.savedAt === 'string');
     if (!isRecord(imported) || !Array.isArray(imported.activities) || !imported.activities.every(validActivity)
       || !Array.isArray(imported.entries) || !imported.entries.every(validEntry)
-      || (imported.todos !== undefined && (!Array.isArray(imported.todos) || !imported.todos.every(validTodo)))) {
+      || (imported.todos !== undefined && (!Array.isArray(imported.todos) || !imported.todos.every(validTodo)))
+      || (imported.journals !== undefined && (!Array.isArray(imported.journals) || !imported.journals.every(validJournal)))) {
       throw new Error('This file does not look like a valid Daywell export.');
     }
-    const action = state.entries.length || state.todos.length
-      ? `This will replace the data currently saved in this browser with ${imported.entries.length} actions and ${(imported.todos || []).length} todos. Continue?`
-      : `Import ${imported.entries.length} actions and ${(imported.todos || []).length} todos into this browser?`;
+    const action = state.entries.length || state.todos.length || state.journals.length
+      ? `This will replace the data currently saved in this browser with ${imported.entries.length} actions, ${(imported.todos || []).length} todos, and ${(imported.journals || []).length} journal entries. Continue?`
+      : `Import ${imported.entries.length} actions, ${(imported.todos || []).length} todos, and ${(imported.journals || []).length} journal entries into this browser?`;
     if (!confirm(action)) return;
-    state = { ...imported, weightKg: Number(imported.weightKg) > 0 ? Number(imported.weightKg) : 70, todos: imported.todos || [] };
+    state = { ...imported, weightKg: Number(imported.weightKg) > 0 ? Number(imported.weightKg) : 70, todos: imported.todos || [], journals: imported.journals || [] };
     selectedDate = localDate();
     save();
     render();
